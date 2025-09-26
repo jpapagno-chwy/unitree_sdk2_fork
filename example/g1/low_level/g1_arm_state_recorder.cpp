@@ -295,8 +295,8 @@ class G1ArmRecorder {
     const std::shared_ptr<const MotorState> ms = motor_state_buffer_.GetData();
     if (!ms || !log_file_.is_open()) return;
 
-    // Log every 50ms (25 control cycles at 500Hz)
-    if (log_counter_ % 25 == 0) {
+    // Log every 2ms (500 control cycles at 500Hz)
+    if (log_counter_ % 500 == 0) {
       log_file_ << std::fixed << std::setprecision(6) << time_ << ",";
       
       // Log arm joint positions (joints 15-28)

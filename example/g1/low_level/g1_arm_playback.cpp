@@ -177,7 +177,7 @@ class G1ArmPlayback {
   uint8_t mode_machine_;
   
   std::vector<TrajectoryPoint> trajectory_;
-  size_t current_trajectory_index_;
+  size_t current_frame_index_;
   bool playback_complete_;
   bool first_state_received_;
   bool ready_to_start_;
@@ -199,7 +199,7 @@ class G1ArmPlayback {
         playback_start_time_(0.0),
         mode_(PR),
         mode_machine_(0),
-        current_trajectory_index_(0),
+        current_frame_index_(0),
         playback_complete_(false),
         first_state_received_(false),
         ready_to_start_(false) {
@@ -359,42 +359,14 @@ class G1ArmPlayback {
     std::cout << "Starting playback!" << std::endl;
   }
 
-  TrajectoryPoint InterpolateTrajectory(double playback_time) {
-    if (current_trajectory_index_ >= trajectory_.size()) {
+  TrajectoryPoint GetCurrentFrame() {
+    // Direct frame access - no interpolation needed since data is at 2ms intervals
+    if (current_frame_index_ >= trajectory_.size()) {
       playback_complete_ = true;
       return trajectory_.back();
     }
     
-    // Find the trajectory segment we're in
-    while (current_trajectory_index_ < trajectory_.size() - 1 &&
-           playback_time > trajectory_[current_trajectory_index_ + 1].timestamp) {
-      current_trajectory_index_++;
-    }
-    
-    if (current_trajectory_index_ >= trajectory_.size() - 1) {
-      playback_complete_ = true;
-      return trajectory_.back();
-    }
-    
-    // Linear interpolation between current and next point
-    const TrajectoryPoint& p1 = trajectory_[current_trajectory_index_];
-    const TrajectoryPoint& p2 = trajectory_[current_trajectory_index_ + 1];
-    
-    double dt = p2.timestamp - p1.timestamp;
-    if (dt <= 0) return p1;
-    
-    double alpha = (playback_time - p1.timestamp) / dt;
-    alpha = std::max(0.0, std::min(1.0, alpha));
-    
-    TrajectoryPoint result;
-    result.timestamp = playback_time;
-    
-    for (int i = 0; i < 14; ++i) {
-      result.arm_positions[i] = p1.arm_positions[i] + alpha * (p2.arm_positions[i] - p1.arm_positions[i]);
-      result.arm_velocities[i] = p1.arm_velocities[i] + alpha * (p2.arm_velocities[i] - p1.arm_velocities[i]);
-    }
-    
-    return result;
+    return trajectory_[current_frame_index_];
   }
 
   void LowCommandWriter() {
@@ -438,41 +410,44 @@ class G1ArmPlayback {
         motor_command_tmp.kp.at(i) = 5.0;  // Low stiffness
         motor_command_tmp.kd.at(i) = GetPlaybackKd(G1MotorType[i]);
       }
-    } else {
-      // During playback: follow trajectory
-      double playback_time = time_ - playback_start_time_;
-      TrajectoryPoint target = InterpolateTrajectory(playback_time);
-      
-      // Set non-arm joints to current position with low stiffness
-      for (int i = 0; i < G1_NUM_MOTOR; ++i) {
-        motor_command_tmp.q_target.at(i) = ms->q.at(i);
-        motor_command_tmp.dq_target.at(i) = 0.0;
-        motor_command_tmp.tau_ff.at(i) = 0.0;
-        motor_command_tmp.kp.at(i) = 5.0;  // Low stiffness for non-arm joints
-        motor_command_tmp.kd.at(i) = GetPlaybackKd(G1MotorType[i]);
+      } else {
+        // During playback: follow trajectory frame by frame
+        TrajectoryPoint target = GetCurrentFrame();
+        
+        // Set all joints to current position with low stiffness
+        for (int i = 0; i < G1_NUM_MOTOR; ++i) {
+          motor_command_tmp.q_target.at(i) = ms->q.at(i);
+          motor_command_tmp.dq_target.at(i) = 0.0;
+          motor_command_tmp.tau_ff.at(i) = 0.0;
+          motor_command_tmp.kp.at(i) = 5.0;  // Low stiffness for all joints
+          motor_command_tmp.kd.at(i) = GetPlaybackKd(G1MotorType[i]);
+        }
+        
+        // Set arm joints to trajectory targets
+        for (int i = 0; i < 14; ++i) {
+          int joint_idx = LeftShoulderPitch + i;
+          motor_command_tmp.q_target.at(joint_idx) = target.arm_positions[i];
+          motor_command_tmp.dq_target.at(joint_idx) = target.arm_velocities[i];
+          motor_command_tmp.kp.at(joint_idx) = GetPlaybackKp(G1MotorType[joint_idx]);
+          motor_command_tmp.kd.at(joint_idx) = GetPlaybackKd(G1MotorType[joint_idx]);
+        }
+        
+        // Advance to next frame
+        current_frame_index_++;
+        
+        // Progress reporting every 250 frames (500ms at 500Hz)
+        if (current_frame_index_ % 250 == 0) {
+          double progress_percent = (double)current_frame_index_ / trajectory_.size() * 100.0;
+          std::cout << "Playback progress: Frame " << current_frame_index_ 
+                    << " / " << trajectory_.size() 
+                    << " (" << std::fixed << std::setprecision(1) << progress_percent << "%)"
+                    << std::endl;
+        }
+        
+        if (playback_complete_) {
+          std::cout << "Playback completed!" << std::endl;
+        }
       }
-      
-      // Set arm joints to trajectory targets
-      for (int i = 0; i < 14; ++i) {
-        int joint_idx = LeftShoulderPitch + i;
-        motor_command_tmp.q_target.at(joint_idx) = target.arm_positions[i];
-        motor_command_tmp.dq_target.at(joint_idx) = target.arm_velocities[i];
-        motor_command_tmp.kp.at(joint_idx) = GetPlaybackKp(G1MotorType[joint_idx]);
-        motor_command_tmp.kd.at(joint_idx) = GetPlaybackKd(G1MotorType[joint_idx]);
-      }
-      
-      // Progress reporting
-      if (static_cast<int>(playback_time * 10) % 10 == 0) {  // Every 1 second
-        std::cout << "Playback progress: " << std::fixed << std::setprecision(1) 
-                  << playback_time << "s / " << trajectory_.back().timestamp << "s" 
-                  << " (" << (playback_time / trajectory_.back().timestamp * 100) << "%)"
-                  << std::endl;
-      }
-      
-      if (playback_complete_) {
-        std::cout << "Playback completed!" << std::endl;
-      }
-    }
 
     motor_command_buffer_.SetData(motor_command_tmp);
   }
@@ -503,15 +478,17 @@ int main(int argc, char const *argv[]) {
   signal(SIGINT, signalHandler);
   signal(SIGTERM, signalHandler);
   
-  if (argc < 3) {
-    std::cout << "Usage: g1_arm_playback network_interface_name csv_file_path" << std::endl;
-    std::cout << "Example: g1_arm_playback enp3s0 g1_arm_states_20250926_145638.csv" << std::endl;
+  // csv file path
+  std::string csv_filename = "/home/jpapagno/projects/unitree_sdk2_fork/example/g1/recorded_data/g1_arm_states_20250926_145638.csv";
+
+  if (argc < 2) {
+    std::cout << "Usage: g1_arm_playback network_interface_name" << std::endl;
+    std::cout << "Example: g1_arm_playback enp3s0" << std::endl;
     std::cout << "This program plays back recorded arm joint trajectories." << std::endl;
     exit(0);
   }
   
   std::string networkInterface = argv[1];
-  std::string csv_filename = argv[2];
   
   std::cout << "Starting G1 Arm Playback..." << std::endl;
   
