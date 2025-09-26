@@ -479,7 +479,7 @@ int main(int argc, char const *argv[]) {
   signal(SIGTERM, signalHandler);
   
   // csv file path
-  std::string csv_filename = "/home/jpapagno/projects/unitree_sdk2_fork/example/g1/recorded_data/g1_arm_states_20250926_145638.csv";
+  std::string csv_filename = "/home/agarg/projects/unitree_sdk2_fork/build/g1_arm_states_20250926_155802.csv";
 
   if (argc < 2) {
     std::cout << "Usage: g1_arm_playback network_interface_name" << std::endl;

@@ -295,30 +295,29 @@ class G1ArmRecorder {
     const std::shared_ptr<const MotorState> ms = motor_state_buffer_.GetData();
     if (!ms || !log_file_.is_open()) return;
 
-    // Log every 2ms (500 control cycles at 500Hz)
-    if (log_counter_ % 500 == 0) {
-      log_file_ << std::fixed << std::setprecision(6) << time_ << ",";
-      
-      // Log arm joint positions (joints 15-28)
-      for (int i = LeftShoulderPitch; i <= RightWristYaw; ++i) {
-        log_file_ << ms->q.at(i);
-        if (i < RightWristYaw) log_file_ << ",";
-      }
-      log_file_ << ",";
-      
-      // Log arm joint velocities (joints 15-28)
-      for (int i = LeftShoulderPitch; i <= RightWristYaw; ++i) {
-        log_file_ << ms->dq.at(i);
-        if (i < RightWristYaw) log_file_ << ",";
-      }
-      log_file_ << std::endl;
-      
-      // Console output every 2 seconds
-      if (log_counter_ % 1000 == 0) {
-        std::cout << "Recording... Time: " << std::fixed << std::setprecision(2) 
-                  << time_ << "s" << std::endl;
-      }
+    // Log every 2ms (every control cycle at 500Hz)
+    log_file_ << std::fixed << std::setprecision(6) << time_ << ",";
+    
+    // Log arm joint positions (joints 15-28)
+    for (int i = LeftShoulderPitch; i <= RightWristYaw; ++i) {
+      log_file_ << ms->q.at(i);
+      if (i < RightWristYaw) log_file_ << ",";
     }
+    log_file_ << ",";
+    
+    // Log arm joint velocities (joints 15-28)
+    for (int i = LeftShoulderPitch; i <= RightWristYaw; ++i) {
+      log_file_ << ms->dq.at(i);
+      if (i < RightWristYaw) log_file_ << ",";
+    }
+    log_file_ << std::endl;
+    
+    // Console output every 2 seconds (1000 control cycles at 500Hz)
+    if (log_counter_ % 1000 == 0) {
+      std::cout << "Recording... Time: " << std::fixed << std::setprecision(2) 
+                << time_ << "s" << std::endl;
+    }
+    
     log_counter_++;
   }
 
