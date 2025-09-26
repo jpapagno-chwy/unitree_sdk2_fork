@@ -19,6 +19,9 @@ target_link_libraries(g1_elbow_basic_example unitree_sdk2)
 add_executable(g1_arm_state_recorder low_level/g1_arm_state_recorder.cpp)
 target_link_libraries(g1_arm_state_recorder unitree_sdk2)
 
+add_executable(g1_arm_playback low_level/g1_arm_playback.cpp)
+target_link_libraries(g1_arm_playback unitree_sdk2)
+
 add_executable(g1_audio_client_example audio/g1_audio_client_example.cpp)
 target_link_libraries(g1_audio_client_example unitree_sdk2)
 

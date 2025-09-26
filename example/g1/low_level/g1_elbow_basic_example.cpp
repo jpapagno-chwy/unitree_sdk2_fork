@@ -217,7 +217,7 @@ class G1ElbowExample {
       double amplitude = M_PI / 36.0;  // 5 degrees amplitude (much smaller)
       double frequency = 0.5;          // 0.5 Hz (2 second period)
     
-      std::cout << "elbow angle: " << elbow_angle << std::endl;
+      //std::cout << "elbow angle: " << elbow_angle << std::endl;
       double elbow_angle = amplitude * std::sin(2.0 * M_PI * frequency * time_);
       
       // Move only left elbow
