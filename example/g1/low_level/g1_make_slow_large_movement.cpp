@@ -203,10 +203,15 @@ class G1ElbowExample {
 
     // Initialize all motors with default values
     for (int i = 0; i < G1_NUM_MOTOR; ++i) {
+      // force feedforward
       motor_command_tmp.tau_ff.at(i) = 0.0;
+      // position reference in rad
       motor_command_tmp.q_target.at(i) = 0.0;
+      // velocity reference in rad/s (example: 0.5 Hz, 2 second period)
       motor_command_tmp.dq_target.at(i) = 0.0;
+      // stiffness
       motor_command_tmp.kp.at(i) = Kp[i];
+      // damping
       motor_command_tmp.kd.at(i) = Kd[i];
     }
 

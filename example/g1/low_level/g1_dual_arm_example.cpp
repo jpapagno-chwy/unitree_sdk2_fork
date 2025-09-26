@@ -121,6 +121,7 @@ inline uint32_t Crc32Core(uint32_t *ptr, uint32_t len) {
   return CRC32;
 };
 
+// Basic stiffness values
 float GetMotorKp(MotorType type) {
   switch (type) {
     case GearboxS:
@@ -134,6 +135,7 @@ float GetMotorKp(MotorType type) {
   }
 }
 
+// Basic damping values
 float GetMotorKd(MotorType type) {
   switch (type) {
     case GearboxS:
