@@ -38,6 +38,7 @@
 #include <unistd.h>
 #include <eigen3/Eigen/Dense>
 
+#include "g1_recorder_structs.h"
 
 using namespace unitree::robot::b2;
 
@@ -53,8 +54,6 @@ static const std::string HG_STATE_TOPIC = "rt/lowstate";
 using namespace unitree::common;
 using namespace unitree::robot;
 
-const int G1_NUM_MOTOR = 29;
-
 // Global flag for graceful shutdown
 volatile bool g_running = true;
 
@@ -63,47 +62,6 @@ void signalHandler(int signum) {
     g_running = false;
 }
 
-template <typename T>
-class DataBuffer {
- public:
-  void SetData(const T &newData) {
-    std::unique_lock<std::shared_mutex> lock(mutex);
-    data = std::make_shared<T>(newData);
-  }
-
-  std::shared_ptr<const T> GetData() {
-    std::shared_lock<std::shared_mutex> lock(mutex);
-    return data ? data : nullptr;
-  }
-
-  void Clear() {
-    std::unique_lock<std::shared_mutex> lock(mutex);
-    data = nullptr;
-  }
-
- private:
-  std::shared_ptr<T> data;
-  std::shared_mutex mutex;
-};
-
-struct ImuState {
-  std::array<float, 3> rpy = {};
-  std::array<float, 3> omega = {};
-};
-
-struct MotorCommand {
-  std::array<float, G1_NUM_MOTOR> q_target = {};
-  std::array<float, G1_NUM_MOTOR> dq_target = {};
-  std::array<float, G1_NUM_MOTOR> kp = {};
-  std::array<float, G1_NUM_MOTOR> kd = {};
-  std::array<float, G1_NUM_MOTOR> tau_ff = {};
-};
-
-struct MotorState {
-  std::array<float, G1_NUM_MOTOR> q = {};
-  std::array<float, G1_NUM_MOTOR> dq = {};
-};
-
 struct TrajectoryPoint {
   double timestamp;
   std::array<float, 14> arm_positions;  // joints 15-28
@@ -111,110 +69,6 @@ struct TrajectoryPoint {
   std::array<float, 7> hand_positions_left;
   std::array<float, 7> hand_positions_right;
 };
-
-enum MotorType { GearboxS = 0, GearboxM = 1, GearboxL = 2 };
-
-typedef struct {
-  uint8_t id     : 4;
-  uint8_t status : 3;
-  uint8_t timeout: 1;
-} RIS_Mode_t;
-
-const int HAND_MOTOR_MAX = 7;
-
-struct MotorCommandHand {
-  std::array<float, HAND_MOTOR_MAX> q_target = {};
-  std::array<float, HAND_MOTOR_MAX> dq_target = {};
-  std::array<float, HAND_MOTOR_MAX> kp = {};
-  std::array<float, HAND_MOTOR_MAX> kd = {};
-  std::array<float, HAND_MOTOR_MAX> tau_ff = {};
-};
-
-struct MotorStateHand {
-  std::array<float, HAND_MOTOR_MAX> q = {};
-  std::array<float, HAND_MOTOR_MAX> dq = {};
-};
-
-std::array<MotorType, G1_NUM_MOTOR> G1MotorType{
-    // clang-format off
-    // legs
-    GearboxM, GearboxM, GearboxM, GearboxL, GearboxS, GearboxS,
-    GearboxM, GearboxM, GearboxM, GearboxL, GearboxS, GearboxS,
-    // waist
-    GearboxM, GearboxS, GearboxS,
-    // arms
-    GearboxS, GearboxS, GearboxS, GearboxS, GearboxS, GearboxS, GearboxS,
-    GearboxS, GearboxS, GearboxS, GearboxS, GearboxS, GearboxS, GearboxS
-    // clang-format on
-};
-
-enum PRorAB { PR = 0, AB = 1 };
-
-enum G1JointValidIndex {
-  LeftShoulderPitch = 15,
-  LeftShoulderRoll = 16,
-  LeftShoulderYaw = 17,
-  LeftElbow = 18,
-  LeftWristRoll = 19,
-  LeftWristPitch = 20,
-  LeftWristYaw = 21,
-  RightShoulderPitch = 22,
-  RightShoulderRoll = 23,
-  RightShoulderYaw = 24,
-  RightElbow = 25,
-  RightWristRoll = 26,
-  RightWristPitch = 27,
-  RightWristYaw = 28
-};
-
-inline uint32_t Crc32Core(uint32_t *ptr, uint32_t len) {
-  uint32_t xbit = 0;
-  uint32_t data = 0;
-  uint32_t CRC32 = 0xFFFFFFFF;
-  const uint32_t dwPolynomial = 0x04c11db7;
-  for (uint32_t i = 0; i < len; i++) {
-    xbit = 1 << 31;
-    data = ptr[i];
-    for (uint32_t bits = 0; bits < 32; bits++) {
-      if (CRC32 & 0x80000000) {
-        CRC32 <<= 1;
-        CRC32 ^= dwPolynomial;
-      } else
-        CRC32 <<= 1;
-      if (data & xbit) CRC32 ^= dwPolynomial;
-
-      xbit >>= 1;
-    }
-  }
-  return CRC32;
-};
-
-// Moderate control gains for smooth playback
-float GetPlaybackKp(MotorType type) {
-  switch (type) {
-    case GearboxS:
-      return 30;   // Moderate stiffness
-    case GearboxM:
-      return 30;
-    case GearboxL:
-      return 50;
-    default:
-      return 0;
-  }
-}
-
-float GetPlaybackKd(MotorType type) {
-  switch (type) {
-    case GearboxS:
-      return 5;    // Good damping for stability
-    case GearboxM:
-      return 5;
-    case GearboxL:
-      return 8;
-    default:
-      return 0;
-  }
-}
 
 class G1ArmPlayback {
  private:
@@ -570,7 +424,7 @@ class G1ArmPlayback {
         motor_command_tmp.dq_target.at(i) = 0.0;
         motor_command_tmp.tau_ff.at(i) = 0.0;
         motor_command_tmp.kp.at(i) = 5.0;  // Low stiffness
-        motor_command_tmp.kd.at(i) = GetPlaybackKd(G1MotorType[i]);
+        motor_command_tmp.kd.at(i) = GetMotorKd(G1MotorType[i]);
       }
       for (int i = 0; i < HAND_MOTOR_MAX; i++) {
         hand_command_tmp_left.q_target.at(i) = ms_left->q.at(i);
@@ -596,7 +450,7 @@ class G1ArmPlayback {
           motor_command_tmp.dq_target.at(i) = 0.0;
           motor_command_tmp.tau_ff.at(i) = 0.0;
           motor_command_tmp.kp.at(i) = 5.0;  // Low stiffness for all joints
-          motor_command_tmp.kd.at(i) = GetPlaybackKd(G1MotorType[i]);
+          motor_command_tmp.kd.at(i) = GetMotorKd(G1MotorType[i]);
         }
         
         // Set arm joints to trajectory targets
@@ -604,8 +458,8 @@ class G1ArmPlayback {
           int joint_idx = LeftShoulderPitch + i;
           motor_command_tmp.q_target.at(joint_idx) = target.arm_positions[i];
           motor_command_tmp.dq_target.at(joint_idx) = target.arm_velocities[i];
-          motor_command_tmp.kp.at(joint_idx) = GetPlaybackKp(G1MotorType[joint_idx]);
-          motor_command_tmp.kd.at(joint_idx) = GetPlaybackKd(G1MotorType[joint_idx]);
+          motor_command_tmp.kp.at(joint_idx) = GetMotorKd(G1MotorType[joint_idx]);
+          motor_command_tmp.kd.at(joint_idx) = GetMotorKd(G1MotorType[joint_idx]);
         }
 
         for (int i = 0; i < HAND_MOTOR_MAX; i++) {
