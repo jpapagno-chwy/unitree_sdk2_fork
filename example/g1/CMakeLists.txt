@@ -16,11 +16,17 @@ target_link_libraries(g1_ankle_swing_example unitree_sdk2)
 add_executable(g1_elbow_basic_example low_level/g1_elbow_basic_example.cpp)
 target_link_libraries(g1_elbow_basic_example unitree_sdk2)
 
-add_executable(g1_arm_state_recorder low_level/g1_arm_state_recorder.cpp)
+add_executable(g1_arm_state_recorder custom/g1_arm_state_recorder.cpp)
 target_link_libraries(g1_arm_state_recorder unitree_sdk2)
 
-add_executable(g1_arm_playback low_level/g1_arm_playback.cpp)
+add_executable(g1_arm_playback custom/g1_arm_playback.cpp)
 target_link_libraries(g1_arm_playback unitree_sdk2)
+
+add_executable(g1_arm_hand_recorder custom/g1_arm_hand_recorder.cpp)
+target_link_libraries(g1_arm_hand_recorder unitree_sdk2)
+
+add_executable(g1_arm_hand_playback custom/g1_arm_hand_playback.cpp)
+target_link_libraries(g1_arm_hand_playback unitree_sdk2)
 
 add_executable(g1_audio_client_example audio/g1_audio_client_example.cpp)
 target_link_libraries(g1_audio_client_example unitree_sdk2)
