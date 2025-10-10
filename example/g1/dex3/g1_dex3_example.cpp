@@ -19,8 +19,15 @@ enum State {
     ROTATE,
     GRIP,
     STOP,
-    PRINT
+    PRINT,
+    OPEN,
+    CLOSE
 };
+
+float kp = 0.5;
+float kd = 0.01;
+float next_kp = 0.5;
+float next_kd = 0.01;
 
 // set URDF Limits
 const float maxLimits_left[7]=  {  1.05 ,  1.05  , 1.75 ,   0   ,  0    , 0     , 0   }; // set max motor value
@@ -56,6 +63,8 @@ const char* stateToString(State state) {
         case GRIP: return "GRIP";
         case STOP: return "STOP";
         case PRINT: return "PRINT";
+        case OPEN: return "OPEN";
+        case CLOSE: return "CLOSE";
         default: return "UNKNOWN";
     }
 }
@@ -96,11 +105,31 @@ void userInputThread() {
             currentState = PRINT;
         } else if (ch == 's') {
             currentState = STOP;
+        } else if (ch == 'o') {
+            currentState = OPEN;
+        } else if (ch == 'c') {
+            currentState = CLOSE;
+        } else if (ch == '0') {
+            next_kp = kp + 0.02;
+        } else if (ch == '9') {
+            next_kp = kp - 0.02;
+            if (next_kp < 0) {
+                next_kp = 0;
+            }
+        } else if (ch == '+') {
+            next_kd = kd + 0.01;
+        } else if (ch == '-') {
+            next_kd = kd - 0.01;
+            if (next_kd < 0) {
+                next_kd = 0;
+            }
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(100)); 
+        std::this_thread::sleep_for(std::chrono::milliseconds(10)); 
     }
 }
 
+
+ 
 // this method can send kp and kd to motors
 void rotateMotors(bool isLeftHand) {
     static int _count = 1; 
@@ -120,7 +149,10 @@ void rotateMotors(bool isLeftHand) {
         mode |= (ris_mode.timeout & 0x01) << 7;  
         msg.motor_cmd()[i].mode(mode);
         msg.motor_cmd()[i].tau(0);
-        msg.motor_cmd()[i].kp(0.5);    
+        
+        // stiffness
+        msg.motor_cmd()[i].kp(0.5);
+        // damping 
         msg.motor_cmd()[i].kd(0.1);    
 
 
@@ -144,6 +176,54 @@ void rotateMotors(bool isLeftHand) {
     }
 
     usleep(100); 
+}
+
+// this method can send static position to motors
+void moveHand(bool isLeftHand, bool isOpen) {
+
+    const float* maxLimits = isLeftHand ? maxLimits_left : maxLimits_right;
+    const float* minLimits = isLeftHand ? minLimits_left : minLimits_right;
+    // open  L:   -0.10294  -0.913251 -0.0570956 -0.0390129 -0.0127923 -0.0529036 -0.0269407
+    // close  L: -0.0321972   0.658828     1.5053   -1.61362   -1.77055    -1.6244   -1.78361
+    // open R: -0.0290204   0.679469 -0.0411741 -0.0671038 -0.0410292 -0.0381968  -0.060765
+    // close  R: -0.0300349  -0.930099   -1.57439    1.51264    1.72646    1.53592    1.71186
+
+    std::array<float, 7> right_open_state = {-0.0290204,0.679469,-0.0411741,-0.0671038,-0.0410292,-0.0381968,-0.060765};
+    std::array<float, 7> left_open_state = {-0.10294,-0.913251,-0.0570956,-0.0390129,-0.0127923,-0.0529036,-0.0269407};
+
+    std::array<float, 7> right_close_state = {-0.0300349,-0.930099,-0.157439,1.51264,1.72646,1.53592,1.71186};
+    std::array<float, 7> left_close_state = {-0.0321972,0.658828,1.5053,-1.61362,-1.77055,-1.6244,-1.78361};
+
+    std::array<float, 7> write_values;
+    if (isOpen) {
+        write_values = isLeftHand ? left_open_state : right_open_state;
+    } else {
+        write_values = isLeftHand ? left_close_state : right_close_state;
+    }
+
+
+    for (int i = 0; i < MOTOR_MAX; i++) {
+        RIS_Mode_t ris_mode;
+        ris_mode.id = i;        
+        ris_mode.status = 0x01; 
+    
+        
+        uint8_t mode = 0;
+        mode |= (ris_mode.id & 0x0F);            
+        mode |= (ris_mode.status & 0x07) << 4;    
+        mode |= (ris_mode.timeout & 0x01) << 7;   
+        msg.motor_cmd()[i].mode(mode);
+        msg.motor_cmd()[i].tau(0);
+
+        msg.motor_cmd()[i].q(write_values[i]); 
+        msg.motor_cmd()[i].dq(0);  
+        msg.motor_cmd()[i].kp(kp);   
+        msg.motor_cmd()[i].kd(kd);   
+    }
+
+
+    handcmd_publisher->Write(msg);
+    usleep(1000000);
 }
 
 // this method can send static position to motors
@@ -205,7 +285,7 @@ void stopMotors() {
 }
 
 // this method can subscribe dds and show the position for now
-void printState(bool isLeftHand){
+void printState(bool isLeftHand, State cur_state){
     Eigen::Matrix<float, 7, 1> q;
 
     const float* maxLimits = isLeftHand ? maxLimits_left : maxLimits_right;
@@ -214,8 +294,8 @@ void printState(bool isLeftHand){
     {
         q(i) = state.motor_state()[i].q();
       
-        q(i) = (q(i) - minLimits[i] ) / (maxLimits[i] - minLimits[i]);
-        q(i) = std::clamp(q(i), 0.0f, 1.0f);
+        // q(i) = (q(i) - minLimits[i] ) / (maxLimits[i] - minLimits[i]);
+        // q(i) = std::clamp(q(i), 0.0f, 1.0f);
     }
     std::cout << "\033[2J\033[H"; 
     std::cout << "-- Hand State --\n";
@@ -280,24 +360,38 @@ int main(int argc, const char** argv)
    
     std::thread inputThread(userInputThread);
     State lastState = INIT; 
+    bool stiffness_changed = false;
     while (true) {
         State state;
         {
             std::lock_guard<std::mutex> lock(stateMutex);
             state = currentState.load();
+            if (next_kp != kp || next_kd != kd) {
+                kp = next_kp;
+                kd = next_kd;
+                // print the current kp and kd
+                std::cout << "kp: " << kp << " kd: " << kd << std::endl;
+                stiffness_changed = true;
+            }
         }
                 
-        if (state != lastState) {
+        if (state != lastState || stiffness_changed) {
             std::cout << "\n--- Current State: " << stateToString(state) << " ---\n";
             std::cout << "Commands:\n";
             std::cout << "  r - Rotate\n";
             std::cout << "  g - Grip\n";
             std::cout << "  p - Print_state\n";
+            std::cout << "  o - Open\n";
+            std::cout << "  c - Close\n";
             std::cout << "  q - Quit\n";
             std::cout << "  s - Stop\n";
             lastState = state; 
+            stiffness_changed = false;
+            std::cout << "kp: " << kp << " kd: " << kd << std::endl;
         }
 
+
+        // print the current state
         switch (state) {
             case INIT:
                 std::cout << "Initializing..." << std::endl;
@@ -313,7 +407,14 @@ int main(int argc, const char** argv)
                 stopMotors();
                 break;
             case PRINT:
-                printState(input == "L");
+                // print the current state
+                printState(input == "L", state);
+                break;
+            case OPEN:
+                moveHand(input == "L", true);
+                break;
+            case CLOSE:
+                moveHand(input == "L", false);
                 break;
             default:
                 std::cout << "Invalid state!" << std::endl;
