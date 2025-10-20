@@ -42,6 +42,7 @@ unitree::robot::ChannelSubscriberPtr<unitree_hg::msg::dds_::HandState_> handstat
 
 using namespace unitree::robot::b2;
 
+// Using "rt/lowcmd" for full control (alternative: "rt/arm_sdk" for weight-based control)
 static const std::string HG_CMD_TOPIC = "rt/lowcmd";
 static const std::string HG_STATE_TOPIC = "rt/lowstate";
 
@@ -49,6 +50,15 @@ using namespace unitree::common;
 using namespace unitree::robot;
 
 class G1ArmRecorder {
+ public:
+  float weight_;
+  float weight_rate_;
+  
+  // Method to take arm control
+  void StartArmControl() {
+    weight_ = 1.0f;
+    std::cout << "Arm control activated (weight = " << weight_ << ")" << std::endl;
+  } 
  private:
   double time_;
   double control_dt_;  // [2ms]
@@ -56,6 +66,7 @@ class G1ArmRecorder {
   uint8_t mode_machine_;
   
   std::ofstream log_file_;
+
   int log_counter_;
   bool first_state_received_;
   bool first_state_received_hand_left_;
@@ -83,6 +94,8 @@ class G1ArmRecorder {
         control_dt_(0.002),
         mode_(PR),
         mode_machine_(0),
+        weight_(0.0f),
+        weight_rate_(0.5f),
         log_counter_(0),
         first_state_received_(false) {
     ChannelFactory::Instance()->Init(0, networkInterface);
@@ -92,17 +105,18 @@ class G1ArmRecorder {
     msc->Init();
 
     /*Shut down motion control-related service*/
-    while(queryMotionStatus())
-    {
-        std::cout << "Try to deactivate the motion control-related service." << std::endl;
-        int32_t ret = msc->ReleaseMode(); 
-        if (ret == 0) {
-            std::cout << "ReleaseMode succeeded." << std::endl;
-        } else {
-            std::cout << "ReleaseMode failed. Error code: " << ret << std::endl;
-        }
-        sleep(5);
-    }
+    // while(queryMotionStatus())
+    // {
+    //     std::cout << "Try to deactivate the motion control-related service." << std::endl;
+    //     int32_t ret = msc->ReleaseMode(); 
+    //     if (ret == 0) {
+    //         std::cout << "ReleaseMode succeeded." << std::endl;
+    //     } else {
+    //         std::cout << "ReleaseMode failed. Error code: " << ret << std::endl;
+    //     }
+    //     sleep(5);
+    // }
+
 
     // Create log file with timestamp
     auto now = std::chrono::system_clock::now();
@@ -285,25 +299,26 @@ class G1ArmRecorder {
   }
 
   void LowCommandWriter() {
-    unitree_hg::msg::dds_::LowCmd_ dds_low_command;
-    dds_low_command.mode_pr() = mode_;
-    dds_low_command.mode_machine() = mode_machine_;
+    unitree_hg::msg::dds_::LowCmd_ dds_low_command;  //type: LowCmd_ variable name dds_low_command
+    dds_low_command.mode_pr() = mode_;  //set the mode_pr field of the dds_low_command to the value of the mode_ variable
+    dds_low_command.mode_machine() = mode_machine_;  //set the mode_machine field of the dds_low_command to the value of the mode_machine_ variable
+    dds_low_command.motor_cmd().at(29).q(weight_);  //set the q field of the dds_low_command to the value of the weight_ variable
 
     const std::shared_ptr<const MotorCommand> mc =
         motor_command_buffer_.GetData();
     if (mc) {
-      for (size_t i = 0; i < G1_NUM_MOTOR; i++) {
+      for (size_t i = 0; i < G1_NUM_MOTOR; i++) {  //loop through the motors
         dds_low_command.motor_cmd().at(i).mode() = 1;  // 1:Enable, 0:Disable
-        dds_low_command.motor_cmd().at(i).tau() = mc->tau_ff.at(i);
-        dds_low_command.motor_cmd().at(i).q() = mc->q_target.at(i);
-        dds_low_command.motor_cmd().at(i).dq() = mc->dq_target.at(i);
-        dds_low_command.motor_cmd().at(i).kp() = mc->kp.at(i);
-        dds_low_command.motor_cmd().at(i).kd() = mc->kd.at(i);
+        dds_low_command.motor_cmd().at(i).tau() = mc->tau_ff.at(i);  //set the tau_ff field of the dds_low_command to the value of the tau_ff field of the mc variable
+        dds_low_command.motor_cmd().at(i).q() = mc->q_target.at(i);  //set the q field of the dds_low_command to the value of the q field of the mc variable
+        dds_low_command.motor_cmd().at(i).dq() = mc->dq_target.at(i);  //set the dq field of the dds_low_command to the value of the dq field of the mc variable
+        dds_low_command.motor_cmd().at(i).kp() = mc->kp.at(i);  //set the kp field of the dds_low_command to the value of the kp field of the mc variable
+        dds_low_command.motor_cmd().at(i).kd() = mc->kd.at(i);  //set the kd field of the dds_low_command to the value of the kd field of the mc variable
       }
 
       dds_low_command.crc() = Crc32Core((uint32_t *)&dds_low_command,
                                         (sizeof(dds_low_command) >> 2) - 1);
-      lowcmd_publisher_->Write(dds_low_command);
+      lowcmd_publisher_->Write(dds_low_command);  //write the dds_low_command to the lowcmd_publisher
     }
 
     dds_hand_command_left.motor_cmd().resize(HAND_MOTOR_MAX);
@@ -313,7 +328,7 @@ class G1ArmRecorder {
     const std::shared_ptr<const MotorCommandHand> mc_right = hand_command_buffer_right_.GetData();
     if (mc_left) {
       // write hand command
-      for (int i = 0; i < HAND_MOTOR_MAX; i++) {
+      for (int i = 0; i < HAND_MOTOR_MAX; i++) {    // boilerplate to talk to the hand motors
           RIS_Mode_t ris_mode;
           ris_mode.id = i;        
           ris_mode.status = 0x01; 
@@ -370,14 +385,14 @@ class G1ArmRecorder {
     
     MotorCommand motor_command_tmp;
     
-    // Set all joints to zero stiffness for manual manipulation
+
     for (int i = 0; i < G1_NUM_MOTOR; ++i) {
       motor_command_tmp.q_target.at(i) = ms->q.at(i);  // Track current position
       motor_command_tmp.dq_target.at(i) = 0.0;         // No velocity target
       motor_command_tmp.tau_ff.at(i) = 0.0;            // No feedforward torque
       motor_command_tmp.kp.at(i) = 0.0;                // ZERO stiffness - completely compliant
       motor_command_tmp.kd.at(i) = GetMotorKd(G1MotorType[i]);  // Small damping for stability
-    }
+  }
 
     motor_command_buffer_.SetData(motor_command_tmp);
 
@@ -438,6 +453,14 @@ int main(int argc, char const *argv[]) {
 
   std::cout << "Starting G1 Arm State Recorder..." << std::endl;
   G1ArmRecorder recorder(networkInterface);
+
+  // Wait for robot to stabilize, then take arm control
+  std::cout << "Waiting for robot to stabilize..." << std::endl;
+  sleep(2);
+  
+  std::cout << "Taking arm control for recording..." << std::endl;
+  recorder.StartArmControl();  // Take full arm control using clean method
+  
 
   while (true) sleep(10);
 
