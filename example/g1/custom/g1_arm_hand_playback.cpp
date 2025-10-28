@@ -20,6 +20,7 @@
 #include <unitree/idl/hg/LowState_.hpp>
 
 #include <unitree/robot/b2/motion_switcher/motion_switcher_client.hpp>
+#include <unitree/robot/g1/loco/g1_loco_client.hpp>
 
 
 #include <unitree/robot/b2/motion_switcher/motion_switcher_client.hpp>
@@ -48,7 +49,7 @@ unitree::robot::ChannelPublisherPtr<unitree_hg::msg::dds_::HandCmd_> handcmd_pub
 unitree::robot::ChannelSubscriberPtr<unitree_hg::msg::dds_::HandState_> handstate_subscriber_left;
 unitree::robot::ChannelSubscriberPtr<unitree_hg::msg::dds_::HandState_> handstate_subscriber_right;
 
-static const std::string HG_CMD_TOPIC = "rt/lowcmd";
+static const std::string HG_CMD_TOPIC = "rt/arm_sdk";
 static const std::string HG_STATE_TOPIC = "rt/lowstate";
 
 using namespace unitree::common;
@@ -101,6 +102,7 @@ class G1ArmPlayback {
   ThreadPtr command_writer_ptr_, control_thread_ptr_;
 
   std::shared_ptr<MotionSwitcherClient> msc;
+  std::shared_ptr<unitree::robot::g1::LocoClient> loco_client_;
 
  public:
   G1ArmPlayback(std::string networkInterface, std::string csv_filename)
@@ -124,22 +126,27 @@ class G1ArmPlayback {
         
     ChannelFactory::Instance()->Init(0, networkInterface);
 
-    msc.reset(new MotionSwitcherClient());
-    msc->SetTimeout(5.0F);
-    msc->Init();
+    // Initialize loco client for standing up
+    loco_client_.reset(new unitree::robot::g1::LocoClient());
+    loco_client_->Init();
+    loco_client_->SetTimeout(10.0f);
 
-    /*Shut down motion control-related service*/
-    while(queryMotionStatus())
-    {
-        std::cout << "Try to deactivate the motion control-related service." << std::endl;
-        int32_t ret = msc->ReleaseMode(); 
-        if (ret == 0) {
-            std::cout << "ReleaseMode succeeded." << std::endl;
-        } else {
-            std::cout << "ReleaseMode failed. Error code: " << ret << std::endl;
-        }
-        sleep(5);
-    }
+    // msc.reset(new MotionSwitcherClient());
+    // msc->SetTimeout(5.0F);
+    // msc->Init();
+
+    // /*Shut down motion control-related service*/
+    // while(queryMotionStatus())
+    // {
+    //     std::cout << "Try to deactivate the motion control-related service." << std::endl;
+    //     int32_t ret = msc->ReleaseMode(); 
+    //     if (ret == 0) {
+    //         std::cout << "ReleaseMode succeeded." << std::endl;
+    //     } else {
+    //         std::cout << "ReleaseMode failed. Error code: " << ret << std::endl;
+    //     }
+    //     sleep(5);
+    // }
 
     // create publisher
     lowcmd_publisher_.reset(
@@ -241,13 +248,6 @@ class G1ArmPlayback {
   void LowStateHandlerHand(const void *message, bool is_left) {
     auto hand_state = *(const unitree_hg::msg::dds_::HandState_ *)message;
 
-    // if (hand_state.crc() !=
-    //     Crc32Core((uint32_t *)&hand_state,
-    //               (sizeof(unitree_hg::msg::dds_::HandState_) >> 2) - 1)) {
-    //   std::cout << "hand_state CRC Error" << std::endl;
-    //   return;
-    // }
-
     // get motor state
     MotorStateHand hand_ms_tmp;
     for (int i = 0; i < HAND_MOTOR_MAX; ++i) {
@@ -301,6 +301,56 @@ class G1ArmPlayback {
     first_state_received_ = true;
   }
 
+  void StandUpRobot() {
+    std::cout << "\n=== Standing up robot ===" << std::endl;
+    
+    // Get current FSM state
+    int fsm_id, fsm_mode;
+    loco_client_->GetFsmId(fsm_id);
+    loco_client_->GetFsmMode(fsm_mode);
+    std::cout << "Current FSM ID: " << fsm_id << ", FSM Mode: " << fsm_mode << std::endl;
+    
+    // First damp the robot
+    std::cout << "Damping robot..." << std::endl;
+    int32_t ret = loco_client_->Damp();
+    if (ret == 0) {
+      std::cout << "Damp command sent successfully" << std::endl;
+    } else {
+      std::cout << "Damp command failed with error: " << ret << std::endl;
+    }
+    sleep(5);
+    
+    // Stand up
+    std::cout << "BalanceStand up robot..." << std::endl;
+    ret = loco_client_->SetFsmId(4);  // 4 is the FSM ID for standing up
+    if (ret == 0) {
+      std::cout << "StandUp command sent successfully" << std::endl;
+    } else {
+      std::cout << "StandUp command failed with error: " << ret << std::endl;
+    }
+    
+    // Check final state
+    loco_client_->GetFsmId(fsm_id);
+    loco_client_->GetFsmMode(fsm_mode);
+    std::cout << "After standing: FSM ID: " << fsm_id << ", FSM Mode: " << fsm_mode << std::endl;
+    std::cout << "=== Robot is standing ===" << std::endl << std::endl;
+
+    sleep(10);  // Give time for robot to stand up
+    // Start the robot
+    std::cout << "Starting robot..." << std::endl;
+    ret = loco_client_->Start();
+    if (ret == 0) {
+      std::cout << "Start command sent successfully" << std::endl;
+    } else {
+      std::cout << "Start command failed with error: " << ret << std::endl;
+    }
+    loco_client_->GetFsmId(fsm_id);
+    loco_client_->GetFsmMode(fsm_mode);
+    std::cout << "After standing: FSM ID: " << fsm_id << ", FSM Mode: " << fsm_mode << std::endl;
+    
+    sleep(5);
+  }
+
   void WaitForStart() {
     while (!first_state_received_ && g_running) {
       std::cout << "Waiting for robot state..." << std::endl;
@@ -309,7 +359,12 @@ class G1ArmPlayback {
     
     if (!g_running) return;
     
-    std::cout << "Robot state received. Press Enter to start playback..." << std::endl;
+    std::cout << "Robot state received." << std::endl;
+    
+    // Stand up the robot
+    StandUpRobot();
+    
+    std::cout << "Press Enter to start arm playback..." << std::endl;
     std::cin.get();
     ready_to_start_ = true;
     playback_start_time_ = time_;
@@ -334,6 +389,7 @@ class G1ArmPlayback {
     const std::shared_ptr<const MotorCommand> mc =
         motor_command_buffer_.GetData();
     if (mc) {
+      dds_low_command.motor_cmd().at(29).q(1.0);  // Enable arm SDK control
       for (size_t i = 0; i < G1_NUM_MOTOR; i++) {
         dds_low_command.motor_cmd().at(i).mode() = 1;  // 1:Enable, 0:Disable
         dds_low_command.motor_cmd().at(i).tau() = mc->tau_ff.at(i);
@@ -454,11 +510,11 @@ class G1ArmPlayback {
         }
         
         // Set arm joints to trajectory targets
-        for (int i = 0; i < 14; ++i) {
+        for (int i = 0; i < 14; ++i) {  
           int joint_idx = LeftShoulderPitch + i;
           motor_command_tmp.q_target.at(joint_idx) = target.arm_positions[i];
           motor_command_tmp.dq_target.at(joint_idx) = target.arm_velocities[i];
-          motor_command_tmp.kp.at(joint_idx) = GetMotorKd(G1MotorType[joint_idx]);
+          motor_command_tmp.kp.at(joint_idx) = GetMotorKp(G1MotorType[joint_idx]);
           motor_command_tmp.kd.at(joint_idx) = GetMotorKd(G1MotorType[joint_idx]);
         }
 
@@ -525,7 +581,7 @@ int main(int argc, char const *argv[]) {
   signal(SIGTERM, signalHandler);
   
   // csv file path
-  std::string csv_filename = "/home/jpapagno/projects/unitree_sdk2_fork/example/g1/custom/hand_example.csv";
+  std::string csv_filename = "/home/jpapagno/projects/unitree_sdk2_fork/build/g1_arm_states_20251023_141546.csv";
 
   if (argc < 2) {
     std::cout << "Usage: g1_arm_playback network_interface_name" << std::endl;

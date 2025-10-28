@@ -60,6 +60,28 @@ int main(int argc, char const *argv[]) {
       continue;
     }
 
+    if (arg_pair.first == "all_fsm_cmds") {
+      client.Damp();
+      
+      int fsm_id;
+      client.GetFsmId(fsm_id);
+      std::cout << "current fsm_id: " << fsm_id << std::endl;
+
+      int fsm_mode;
+      client.GetFsmMode(fsm_mode);
+      std::cout << "current fsm_mode: " << fsm_mode << std::endl;
+      
+      fsm_id = std::stoi(arg_pair.second);
+      int32_t ret = client.SetFsmId(fsm_id);
+      std::cout << "set fsm_id to " << fsm_id << " (return code: " << ret << ")" << std::endl;
+
+      client.GetFsmId(fsm_id);
+      std::cout << "current fsm_id: " << fsm_id << std::endl;
+
+      client.GetFsmMode(fsm_mode);
+      std::cout << "current fsm_mode: " << fsm_mode << std::endl;
+    }
+
     if (arg_pair.first == "get_fsm_id") {
       int fsm_id;
       client.GetFsmId(fsm_id);
@@ -102,8 +124,8 @@ int main(int argc, char const *argv[]) {
 
     if (arg_pair.first == "set_fsm_id") {
       int fsm_id = std::stoi(arg_pair.second);
-      client.SetFsmId(fsm_id);
-      std::cout << "set fsm_id to " << fsm_id << std::endl;
+      int32_t ret = client.SetFsmId(fsm_id);
+      std::cout << "set fsm_id to " << fsm_id << " (return code: " << ret << ")" << std::endl;
     }
 
     if (arg_pair.first == "set_balance_mode") {

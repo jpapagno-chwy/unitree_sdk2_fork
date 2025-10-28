@@ -6,6 +6,7 @@
 #include <iomanip>
 #include <chrono>
 #include <sstream>
+#include <signal.h>
 
 // DDS
 #include <unitree/robot/channel/channel_publisher.hpp>
@@ -42,23 +43,22 @@ unitree::robot::ChannelSubscriberPtr<unitree_hg::msg::dds_::HandState_> handstat
 
 using namespace unitree::robot::b2;
 
+// Global flag for graceful shutdown
+volatile bool g_running = true;
+
+void signalHandler(int signum) {
+    std::cout << "\nInterrupt signal (" << signum << ") received. Stopping recording..." << std::endl;
+    g_running = false;
+}
+
 // Using "rt/lowcmd" for full control (alternative: "rt/arm_sdk" for weight-based control)
-static const std::string HG_CMD_TOPIC = "rt/lowcmd";
+static const std::string HG_CMD_TOPIC = "rt/low_cmd";
 static const std::string HG_STATE_TOPIC = "rt/lowstate";
 
 using namespace unitree::common;
 using namespace unitree::robot;
 
 class G1ArmRecorder {
- public:
-  float weight_;
-  float weight_rate_;
-  
-  // Method to take arm control
-  void StartArmControl() {
-    weight_ = 1.0f;
-    std::cout << "Arm control activated (weight = " << weight_ << ")" << std::endl;
-  } 
  private:
   double time_;
   double control_dt_;  // [2ms]
@@ -71,6 +71,9 @@ class G1ArmRecorder {
   bool first_state_received_;
   bool first_state_received_hand_left_;
   bool first_state_received_hand_right_;
+  bool recording_active_;  // Flag to control when to start recording
+  std::chrono::steady_clock::time_point recording_start_time_;
+  const double recording_duration_seconds_ = 20.0;  // Auto-stop after 20 seconds
 
   DataBuffer<MotorState> motor_state_buffer_;
   DataBuffer<MotorStateHand> motor_state_buffer_hand_left;
@@ -94,29 +97,14 @@ class G1ArmRecorder {
         control_dt_(0.002),
         mode_(PR),
         mode_machine_(0),
-        weight_(0.0f),
-        weight_rate_(0.5f),
         log_counter_(0),
-        first_state_received_(false) {
+        first_state_received_(false),
+        recording_active_(false) {
     ChannelFactory::Instance()->Init(0, networkInterface);
 
     msc.reset(new MotionSwitcherClient());
     msc->SetTimeout(5.0F);
     msc->Init();
-
-    /*Shut down motion control-related service*/
-    // while(queryMotionStatus())
-    // {
-    //     std::cout << "Try to deactivate the motion control-related service." << std::endl;
-    //     int32_t ret = msc->ReleaseMode(); 
-    //     if (ret == 0) {
-    //         std::cout << "ReleaseMode succeeded." << std::endl;
-    //     } else {
-    //         std::cout << "ReleaseMode failed. Error code: " << ret << std::endl;
-    //     }
-    //     sleep(5);
-    // }
-
 
     // Create log file with timestamp
     auto now = std::chrono::system_clock::now();
@@ -179,27 +167,104 @@ class G1ArmRecorder {
       this->LowStateHandlerHand(message, false);
     }, 1);
         
-    std::cout << "G1 Arm State Recorder started." << std::endl;
+    std::cout << "G1 Arm State Recorder initialized." << std::endl;
     std::cout << "Robot will be in damped mode (low stiffness, high damping)." << std::endl;
-    std::cout << "Press Ctrl+C to stop recording." << std::endl;
+  }
+  
+  void WaitForRecordingStart() {
+    // Wait for robot state to be received
+    while (!first_state_received_ && g_running) {
+      std::cout << "Waiting for robot state..." << std::endl;
+      sleep(1);
+    }
+    
+    if (!g_running) return;
+    
+    std::cout << "\n=== Ready to Record ===" << std::endl;
+    std::cout << "Robot is in damped mode - you can manually move the arms." << std::endl;
+    std::cout << "Position the robot as desired, then press ENTER to start recording..." << std::endl;
+    std::cin.get();
+    
+    if (!g_running) return;
+    
+    // Countdown
+    std::cout << "\nStarting recording in:" << std::endl;
+    for (int i = 5; i > 0; i--) {
+      std::cout << "  " << i << "..." << std::endl;
+      sleep(1);
+      if (!g_running) return;
+    }
+    
+    std::cout << "\n*** RECORDING STARTED ***" << std::endl;
+    std::cout << "Recording will automatically stop after " << recording_duration_seconds_ << " seconds." << std::endl;
+    std::cout << "Press Ctrl+C to stop recording early." << std::endl << std::endl;
+    recording_active_ = true;
+    recording_start_time_ = std::chrono::steady_clock::now();
   }
 
   ~G1ArmRecorder() {
+    Shutdown();
+  }
+
+  void Shutdown() {
+    std::cout << "Shutting down G1 Arm Recorder..." << std::endl;
+    
+    // Stop control threads gracefully
+    if (control_thread_ptr_) {
+      control_thread_ptr_.reset();
+      std::cout << "Control thread stopped." << std::endl;
+    }
+    
+    if (command_writer_ptr_) {
+      command_writer_ptr_.reset();
+      std::cout << "Command writer thread stopped." << std::endl;
+    }
+    
+    // Send final damped command to ensure robot stays safe
+    SendFinalDampedCommand();
+    
+    // Close log file
     if (log_file_.is_open()) {
       log_file_.close();
-      std::cout << "Log file closed." << std::endl;
+      std::cout << "Log file closed. Total records: " << log_counter_ << std::endl;
+    }
+    
+    std::cout << "Shutdown complete." << std::endl;
+  }
+
+private:
+  void SendFinalDampedCommand() {
+    // Send one final command to ensure robot stays in damped mode
+    const std::shared_ptr<const MotorState> ms = motor_state_buffer_.GetData();
+    if (!ms) return;
+    
+    unitree_hg::msg::dds_::LowCmd_ dds_low_command;
+    dds_low_command.mode_pr() = mode_;
+    dds_low_command.mode_machine() = mode_machine_;
+    
+    // Set all motors to damped mode (zero stiffness, small damping)
+    for (size_t i = 0; i < G1_NUM_MOTOR; i++) {
+      dds_low_command.motor_cmd().at(i).mode() = 1;  // Enable
+      dds_low_command.motor_cmd().at(i).tau() = 0.0;  // No feedforward torque
+      dds_low_command.motor_cmd().at(i).q() = ms->q.at(i);  // Current position
+      dds_low_command.motor_cmd().at(i).dq() = 0.0;  // No velocity target
+      dds_low_command.motor_cmd().at(i).kp() = 0.0;  // Zero stiffness
+      dds_low_command.motor_cmd().at(i).kd() = GetMotorKd(G1MotorType[i]);  // Small damping
+    }
+    
+    dds_low_command.crc() = Crc32Core((uint32_t *)&dds_low_command,
+                                      (sizeof(dds_low_command) >> 2) - 1);
+    
+    if (lowcmd_publisher_) {
+      lowcmd_publisher_->Write(dds_low_command);
+      std::cout << "Final damped command sent to robot." << std::endl;
     }
   }
 
+public:
+
   void LowStateHandlerHand(const void *message, bool is_left) {
     auto hand_state = *(const unitree_hg::msg::dds_::HandState_ *)message;
-
-    // if (hand_state.crc() !=
-    //     Crc32Core((uint32_t *)&hand_state,
-    //               (sizeof(unitree_hg::msg::dds_::HandState_) >> 2) - 1)) {
-    //   std::cout << "hand_state CRC Error" << std::endl;
-    //   return;
-    // }
 
     // get motor state
     MotorStateHand hand_ms_tmp;
@@ -254,6 +319,9 @@ class G1ArmRecorder {
   }
 
   void LogArmStates() {
+    // Only log if recording is active
+    if (!recording_active_) return;
+    
     const std::shared_ptr<const MotorState> ms = motor_state_buffer_.GetData();
     const std::shared_ptr<const MotorStateHand> ms_left = motor_state_buffer_hand_left.GetData();
     const std::shared_ptr<const MotorStateHand> ms_right = motor_state_buffer_hand_right.GetData();
@@ -302,11 +370,11 @@ class G1ArmRecorder {
     unitree_hg::msg::dds_::LowCmd_ dds_low_command;  //type: LowCmd_ variable name dds_low_command
     dds_low_command.mode_pr() = mode_;  //set the mode_pr field of the dds_low_command to the value of the mode_ variable
     dds_low_command.mode_machine() = mode_machine_;  //set the mode_machine field of the dds_low_command to the value of the mode_machine_ variable
-    dds_low_command.motor_cmd().at(29).q(weight_);  //set the q field of the dds_low_command to the value of the weight_ variable
-
+    
     const std::shared_ptr<const MotorCommand> mc =
         motor_command_buffer_.GetData();
     if (mc) {
+
       for (size_t i = 0; i < G1_NUM_MOTOR; i++) {  //loop through the motors
         dds_low_command.motor_cmd().at(i).mode() = 1;  // 1:Enable, 0:Disable
         dds_low_command.motor_cmd().at(i).tau() = mc->tau_ff.at(i);  //set the tau_ff field of the dds_low_command to the value of the tau_ff field of the mc variable
@@ -383,6 +451,19 @@ class G1ArmRecorder {
 
     time_ += control_dt_;
     
+    // Check if recording should auto-stop after 20 seconds
+    if (recording_active_) {
+      auto current_time = std::chrono::steady_clock::now();
+      auto elapsed_seconds = std::chrono::duration<double>(current_time - recording_start_time_).count();
+      
+      if (elapsed_seconds >= recording_duration_seconds_) {
+        std::cout << "\n*** RECORDING AUTOMATICALLY STOPPED AFTER " << recording_duration_seconds_ << " SECONDS ***" << std::endl;
+        std::cout << "Total records saved: " << log_counter_ << std::endl;
+        recording_active_ = false;
+        g_running = false;  // Signal main loop to exit
+      }
+    }
+    
     MotorCommand motor_command_tmp;
     
 
@@ -441,6 +522,10 @@ class G1ArmRecorder {
 };
 
 int main(int argc, char const *argv[]) {
+  // Set up signal handlers for graceful shutdown
+  signal(SIGINT, signalHandler);
+  signal(SIGTERM, signalHandler);
+  
   if (argc < 2) {
     std::cout << "Usage: g1_arm_state_recorder network_interface_name" << std::endl;
     std::cout << "This program records arm joint states while keeping the robot in damped mode." << std::endl;
@@ -449,20 +534,27 @@ int main(int argc, char const *argv[]) {
   
   std::string networkInterface = argv[1];
 
-
-
   std::cout << "Starting G1 Arm State Recorder..." << std::endl;
-  G1ArmRecorder recorder(networkInterface);
-
-  // Wait for robot to stabilize, then take arm control
-  std::cout << "Waiting for robot to stabilize..." << std::endl;
-  sleep(2);
   
-  std::cout << "Taking arm control for recording..." << std::endl;
-  recorder.StartArmControl();  // Take full arm control using clean method
-  
+  try {
+    G1ArmRecorder recorder(networkInterface);
+    
+    // Wait for user to be ready and countdown
+    recorder.WaitForRecordingStart();
 
-  while (true) sleep(10);
+    // Main loop - check for shutdown signal
+    while (g_running) {
+      sleep(1);  // Check every second instead of sleeping for 10 seconds
+    }
+    
+    // Explicit shutdown call to ensure cleanup happens before destructor
+    recorder.Shutdown();
+    
+  } catch (const std::exception& e) {
+    std::cerr << "Error: " << e.what() << std::endl;
+    return 1;
+  }
 
+  std::cout << "Recording stopped." << std::endl;
   return 0;
 }
