@@ -24,6 +24,7 @@
 
 
 #include <unitree/robot/b2/motion_switcher/motion_switcher_client.hpp>
+#include <unitree/robot/b2/robot_state/robot_state_client.hpp>
 #include <chrono>
 #include <thread>
 #include <unitree/idl/hg/HandState_.hpp> //replace your sdk path
@@ -65,8 +66,10 @@ void signalHandler(int signum) {
 
 struct TrajectoryPoint {
   double timestamp;
-  std::array<float, 14> arm_positions;  // joints 15-28
-  std::array<float, 14> arm_velocities;
+  std::array<float, 3> waist_positions;   // joints 12, 13, 14
+  std::array<float, 14> arm_positions;    // joints 15-28
+  std::array<float, 3> waist_velocities;  // joints 12, 13, 14
+  std::array<float, 14> arm_velocities;   // joints 15-28
   std::array<float, 7> hand_positions_left;
   std::array<float, 7> hand_positions_right;
 };
@@ -103,6 +106,7 @@ class G1ArmPlayback {
 
   std::shared_ptr<MotionSwitcherClient> msc;
   std::shared_ptr<unitree::robot::g1::LocoClient> loco_client_;
+  std::shared_ptr<unitree::robot::b2::RobotStateClient> robot_state_client_;
 
  public:
   G1ArmPlayback(std::string networkInterface, std::string csv_filename)
@@ -130,6 +134,11 @@ class G1ArmPlayback {
     loco_client_.reset(new unitree::robot::g1::LocoClient());
     loco_client_->Init();
     loco_client_->SetTimeout(10.0f);
+
+    // Initialize robot state client for service switching
+    robot_state_client_.reset(new unitree::robot::b2::RobotStateClient());
+    robot_state_client_->Init();
+    robot_state_client_->SetTimeout(10.0f);
 
     // msc.reset(new MotionSwitcherClient());
     // msc->SetTimeout(5.0F);
@@ -219,14 +228,24 @@ class G1ArmPlayback {
         
         if (col == 0) {
           point.timestamp = value;
-        } else if (col >= 1 && col <= 14) {
-          point.arm_positions[col-1] = value;
-        } else if (col >= 15 && col <= 28) {
-          point.arm_velocities[col-15] = value;
-        } else if (col >= 29 && col <= 35) {
-          point.hand_positions_left[col-29] = value;
-        } else if (col >= 36 && col <= 42) {
-          point.hand_positions_right[col-36] = value;
+        } else if (col >= 1 && col <= 3) {
+          // Waist positions (joints 12, 13, 14)
+          point.waist_positions[col-1] = value;
+        } else if (col >= 4 && col <= 17) {
+          // Arm positions (joints 15-28)
+          point.arm_positions[col-4] = value;
+        } else if (col >= 18 && col <= 20) {
+          // Waist velocities (joints 12, 13, 14)
+          point.waist_velocities[col-18] = value;
+        } else if (col >= 21 && col <= 34) {
+          // Arm velocities (joints 15-28)
+          point.arm_velocities[col-21] = value;
+        } else if (col >= 35 && col <= 41) {
+          // Left hand positions
+          point.hand_positions_left[col-35] = value;
+        } else if (col >= 42 && col <= 48) {
+          // Right hand positions
+          point.hand_positions_right[col-42] = value;
         } 
         col++;
       }
@@ -301,54 +320,164 @@ class G1ArmPlayback {
     first_state_received_ = true;
   }
 
-  void StandUpRobot() {
-    std::cout << "\n=== Standing up robot ===" << std::endl;
-    
-    // Get current FSM state
-    int fsm_id, fsm_mode;
-    loco_client_->GetFsmId(fsm_id);
+  void LogFsmState() {
+    int fsm_id_ret;
+    int fsm_mode;
+    loco_client_->GetFsmId(fsm_id_ret);
     loco_client_->GetFsmMode(fsm_mode);
-    std::cout << "Current FSM ID: " << fsm_id << ", FSM Mode: " << fsm_mode << std::endl;
-    
-    // First damp the robot
-    std::cout << "Damping robot..." << std::endl;
-    int32_t ret = loco_client_->Damp();
-    if (ret == 0) {
-      std::cout << "Damp command sent successfully" << std::endl;
-    } else {
-      std::cout << "Damp command failed with error: " << ret << std::endl;
-    }
-    sleep(5);
-    
-    // Stand up
-    std::cout << "BalanceStand up robot..." << std::endl;
-    ret = loco_client_->SetFsmId(4);  // 4 is the FSM ID for standing up
-    if (ret == 0) {
-      std::cout << "StandUp command sent successfully" << std::endl;
-    } else {
-      std::cout << "StandUp command failed with error: " << ret << std::endl;
-    }
-    
-    // Check final state
-    loco_client_->GetFsmId(fsm_id);
-    loco_client_->GetFsmMode(fsm_mode);
-    std::cout << "After standing: FSM ID: " << fsm_id << ", FSM Mode: " << fsm_mode << std::endl;
-    std::cout << "=== Robot is standing ===" << std::endl << std::endl;
+    std::cout << "FSM State: ID=" << fsm_id_ret << ", Mode=" << fsm_mode << std::endl;
+  }
 
-    sleep(10);  // Give time for robot to stand up
-    // Start the robot
-    std::cout << "Starting robot..." << std::endl;
-    ret = loco_client_->Start();
-    if (ret == 0) {
-      std::cout << "Start command sent successfully" << std::endl;
-    } else {
-      std::cout << "Start command failed with error: " << ret << std::endl;
-    }
-    loco_client_->GetFsmId(fsm_id);
-    loco_client_->GetFsmMode(fsm_mode);
-    std::cout << "After standing: FSM ID: " << fsm_id << ", FSM Mode: " << fsm_mode << std::endl;
+  void SwitchToAiSport() {
+    std::cout << "\n=== Switching to AI Sport Mode ===" << std::endl;
     
-    sleep(5);
+    // First, list available services and show current active service
+    std::vector<unitree::robot::b2::ServiceState> serviceList;
+    int32_t ret = robot_state_client_->ServiceList(serviceList);
+    if (ret == 0) {
+      std::cout << "Available services:" << std::endl;
+      std::vector<std::string> activeServices;
+      for (const auto& service : serviceList) {
+        std::cout << "  - " << service.name << " (status: " << service.status << ", protect: " << service.protect << ")";
+        if (service.status == 1) {
+          std::cout << " [ACTIVE]";
+          activeServices.push_back(service.name);
+        }
+        std::cout << std::endl;
+      }
+      std::cout << "🔍 CURRENT ACTIVE SERVICES: ";
+      for (size_t i = 0; i < activeServices.size(); ++i) {
+        std::cout << activeServices[i];
+        if (i < activeServices.size() - 1) std::cout << ", ";
+      }
+      std::cout << std::endl;
+      
+      // Turn off conflicting services first
+      std::vector<std::string> conflictingServices = {"auto_test_arm", "auto_test_low"};
+      for (const std::string& conflictService : conflictingServices) {
+        if (std::find(activeServices.begin(), activeServices.end(), conflictService) != activeServices.end()) {
+          std::cout << "🔄 Turning off conflicting service: " << conflictService << std::endl;
+          int32_t turnOffStatus;
+          int32_t turnOffRet = robot_state_client_->ServiceSwitch(conflictService, 0, turnOffStatus);
+          if (turnOffRet == 0) {
+            if (turnOffStatus == 0) {
+              std::cout << "✓ Successfully turned off " << conflictService << " (status: " << turnOffStatus << ")" << std::endl;
+            } else {
+              std::cout << "⚠ Turn off command sent for " << conflictService << " but still active (status: " << turnOffStatus << ")" << std::endl;
+            }
+          } else {
+            std::cout << "⚠ Failed to turn off " << conflictService << ", error: " << turnOffRet << std::endl;
+          }
+          sleep(2);
+        }
+      }
+    } else {
+      std::cout << "Failed to get service list, error: " << ret << std::endl;
+    }
+    
+    // Switch to AI sport mode
+    int32_t status;
+    ret = robot_state_client_->ServiceSwitch("ai_sport", 1, status);
+    if (ret == 0) {
+      if (status == 1) {
+        std::cout << "✓ Successfully switched to AI sport mode (status: " << status << ")" << std::endl;
+      } else {
+        std::cout << "⚠ AI sport mode switch command sent but service not active (status: " << status << ")" << std::endl;
+      }
+    } else {
+      std::cout << "⚠ Failed to switch to AI sport mode, error: " << ret << std::endl;
+    }
+    
+    sleep(5); // Give more time for service to activate
+    
+    // Verify the service after switching
+    serviceList.clear(); // Clear the previous list
+    ret = robot_state_client_->ServiceList(serviceList);
+    if (ret == 0) {
+      std::cout << "Services after switching:" << std::endl;
+      std::vector<std::string> newActiveServices;
+      bool aiSportActive = false;
+      for (const auto& service : serviceList) {
+        if (service.status == 1) {
+          std::cout << "  ✓ " << service.name << " [ACTIVE]" << std::endl;
+          newActiveServices.push_back(service.name);
+          if (service.name == "ai_sport") {
+            aiSportActive = true;
+          }
+        }
+      }
+      std::cout << "🎯 NEW ACTIVE SERVICES: ";
+      for (size_t i = 0; i < newActiveServices.size(); ++i) {
+        std::cout << newActiveServices[i];
+        if (i < newActiveServices.size() - 1) std::cout << ", ";
+      }
+      std::cout << std::endl;
+      
+      if (aiSportActive) {
+        std::cout << "🎉 AI SPORT MODE IS NOW ACTIVE!" << std::endl;
+      } else {
+        std::cout << "❌ AI SPORT MODE FAILED TO ACTIVATE" << std::endl;
+        std::cout << "💡 Continuing without AI sport mode - using basic locomotion" << std::endl;
+      }
+    }
+    
+    std::cout << "=== AI Sport Mode Switch Complete ===" << std::endl;
+  }
+
+  void SetFsmId(int fsm_id) {
+    int32_t ret = loco_client_->SetFsmId(fsm_id);
+    if (ret == 0) {
+      std::cout << "SetFsmId " << fsm_id << " command sent successfully" << std::endl;
+    } else {
+      std::cout << "SetFsmId " << fsm_id << " command failed with error: " << ret << std::endl;
+      return; // Don't continue if command failed
+    }
+    
+    // Wait for FSM transition to complete
+    int fsm_mode;
+    int fsm_id_ret;
+    int attempts = 0;
+    const int max_attempts = 10;
+    
+    do {
+      sleep(1);
+      loco_client_->GetFsmId(fsm_id_ret);
+      loco_client_->GetFsmMode(fsm_mode);
+      std::cout << "Checking FSM state: ID=" << fsm_id_ret << ", Mode=" << fsm_mode << std::endl;
+      attempts++;
+    } while (fsm_id_ret != fsm_id && attempts < max_attempts);
+    
+    if (fsm_id_ret == fsm_id) {
+      std::cout << "✓ FSM transition to " << fsm_id << " completed successfully" << std::endl;
+    } else {
+      std::cout << "⚠ FSM transition to " << fsm_id << " may not have completed (current: " << fsm_id_ret << ")" << std::endl;
+    }
+    sleep(2); // Additional settling time
+  }
+
+  void StandUpRobot() {
+    std::cout << "\n=== Initializing Robot ===" << std::endl;
+    
+    // First switch to AI sport mode
+    // SwitchToAiSport();
+    
+    // // Try to activate motion_switcher service as well
+    // std::cout << "\n=== Activating Motion Switcher ===" << std::endl;
+    // int32_t motionStatus;
+    // int32_t motionRet = robot_state_client_->ServiceSwitch("motion_switcher", 1, motionStatus);
+    // if (motionRet == 0 && motionStatus == 1) {
+    //   std::cout << "✓ Motion switcher activated" << std::endl;
+    // } else {
+    //   std::cout << "⚠ Motion switcher activation failed (ret: " << motionRet << ", status: " << motionStatus << ")" << std::endl;
+    // }
+    // sleep(2);
+    
+    // Then proceed with FSM transitions
+    std::cout << "\n=== Standing up robot ===" << std::endl;
+    SetFsmId(1);   // Damp
+    SetFsmId(4);   // Stand up
+    sleep(10);
+    SetFsmId(500); // Start locomotion system
   }
 
   void WaitForStart() {
@@ -362,7 +491,7 @@ class G1ArmPlayback {
     std::cout << "Robot state received." << std::endl;
     
     // Stand up the robot
-    StandUpRobot();
+    // StandUpRobot();
     
     std::cout << "Press Enter to start arm playback..." << std::endl;
     std::cin.get();
@@ -398,7 +527,6 @@ class G1ArmPlayback {
         dds_low_command.motor_cmd().at(i).kp() = mc->kp.at(i);
         dds_low_command.motor_cmd().at(i).kd() = mc->kd.at(i);
       }
-
       dds_low_command.crc() = Crc32Core((uint32_t *)&dds_low_command,
                                         (sizeof(dds_low_command) >> 2) - 1);
       lowcmd_publisher_->Write(dds_low_command);
@@ -509,7 +637,16 @@ class G1ArmPlayback {
           motor_command_tmp.kd.at(i) = GetMotorKd(G1MotorType[i]);
         }
         
-        // Set arm joints to trajectory targets
+        // Set waist joints to trajectory targets (joints 12, 13, 14)
+        for (int i = 0; i < 3; ++i) {
+          int joint_idx = 12 + i;  // waist joints 12, 13, 14
+          motor_command_tmp.q_target.at(joint_idx) = target.waist_positions[i];
+          motor_command_tmp.dq_target.at(joint_idx) = target.waist_velocities[i];
+          motor_command_tmp.kp.at(joint_idx) = GetMotorKp(G1MotorType[joint_idx]);
+          motor_command_tmp.kd.at(joint_idx) = GetMotorKd(G1MotorType[joint_idx]);
+        }
+        
+        // Set arm joints to trajectory targets (joints 15-28)
         for (int i = 0; i < 14; ++i) {  
           int joint_idx = LeftShoulderPitch + i;
           motor_command_tmp.q_target.at(joint_idx) = target.arm_positions[i];
@@ -581,7 +718,7 @@ int main(int argc, char const *argv[]) {
   signal(SIGTERM, signalHandler);
   
   // csv file path
-  std::string csv_filename = "/home/jpapagno/projects/unitree_sdk2_fork/build/g1_arm_states_20251023_141546.csv";
+  std::string csv_filename = "/home/jpapagno/projects/unitree_sdk2_fork/example/g1/custom/trial_9.csv";
 
   if (argc < 2) {
     std::cout << "Usage: g1_arm_playback network_interface_name" << std::endl;

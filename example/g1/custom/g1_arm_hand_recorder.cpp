@@ -47,12 +47,13 @@ using namespace unitree::robot::b2;
 volatile bool g_running = true;
 
 void signalHandler(int signum) {
-    std::cout << "\nInterrupt signal (" << signum << ") received. Stopping recording..." << std::endl;
+    std::cout << "\n\n*** INTERRUPT SIGNAL RECEIVED ***" << std::endl;
+    std::cout << "Stopping recording and saving data..." << std::endl;
     g_running = false;
 }
 
 // Using "rt/lowcmd" for full control (alternative: "rt/arm_sdk" for weight-based control)
-static const std::string HG_CMD_TOPIC = "rt/low_cmd";
+static const std::string HG_CMD_TOPIC = "rt/arm_sdk";
 static const std::string HG_STATE_TOPIC = "rt/lowstate";
 
 using namespace unitree::common;
@@ -72,8 +73,6 @@ class G1ArmRecorder {
   bool first_state_received_hand_left_;
   bool first_state_received_hand_right_;
   bool recording_active_;  // Flag to control when to start recording
-  std::chrono::steady_clock::time_point recording_start_time_;
-  const double recording_duration_seconds_ = 20.0;  // Auto-stop after 20 seconds
 
   DataBuffer<MotorState> motor_state_buffer_;
   DataBuffer<MotorStateHand> motor_state_buffer_hand_left;
@@ -120,10 +119,12 @@ class G1ArmRecorder {
       
       // Write CSV header
       log_file_ << "timestamp,";
+      log_file_ << "waist_yaw,waist_roll,waist_pitch,";
       log_file_ << "left_shoulder_pitch,left_shoulder_roll,left_shoulder_yaw,left_elbow,";
       log_file_ << "left_wrist_roll,left_wrist_pitch,left_wrist_yaw,";
       log_file_ << "right_shoulder_pitch,right_shoulder_roll,right_shoulder_yaw,right_elbow,";
       log_file_ << "right_wrist_roll,right_wrist_pitch,right_wrist_yaw,";
+      log_file_ << "waist_yaw_vel,waist_roll_vel,waist_pitch_vel,";
       log_file_ << "left_shoulder_pitch_vel,left_shoulder_roll_vel,left_shoulder_yaw_vel,left_elbow_vel,";
       log_file_ << "left_wrist_roll_vel,left_wrist_pitch_vel,left_wrist_yaw_vel,";
       log_file_ << "right_shoulder_pitch_vel,right_shoulder_roll_vel,right_shoulder_yaw_vel,right_elbow_vel,";
@@ -196,10 +197,9 @@ class G1ArmRecorder {
     }
     
     std::cout << "\n*** RECORDING STARTED ***" << std::endl;
-    std::cout << "Recording will automatically stop after " << recording_duration_seconds_ << " seconds." << std::endl;
-    std::cout << "Press Ctrl+C to stop recording early." << std::endl << std::endl;
+    std::cout << "Recording is now active - move the robot as desired." << std::endl;
+    std::cout << "Press Ctrl+C to stop recording when finished." << std::endl << std::endl;
     recording_active_ = true;
-    recording_start_time_ = std::chrono::steady_clock::now();
   }
 
   ~G1ArmRecorder() {
@@ -330,12 +330,22 @@ public:
     // Log every 2ms (every control cycle at 500Hz)
     log_file_ << std::fixed << std::setprecision(6) << time_ << ",";
     
+    // Log waist joint 14 position
+    log_file_ << ms->q.at(12) << ",";
+    log_file_ << ms->q.at(13) << ",";
+    log_file_ << ms->q.at(14) << ",";
+    
     // Log arm joint positions (joints 15-28)
     for (int i = LeftShoulderPitch; i <= RightWristYaw; ++i) {
       log_file_ << ms->q.at(i);
       if (i < RightWristYaw) log_file_ << ",";
     }
     log_file_ << ",";
+    
+    // Log waist joint 14 velocity
+    log_file_ << ms->dq.at(12) << ",";
+    log_file_ << ms->dq.at(13) << ",";
+    log_file_ << ms->dq.at(14) << ",";
     
     // Log arm joint velocities (joints 15-28)
     for (int i = LeftShoulderPitch; i <= RightWristYaw; ++i) {
@@ -360,7 +370,7 @@ public:
     // Console output every 2 seconds (1000 control cycles at 500Hz)
     if (log_counter_ % 1000 == 0) {
       std::cout << "Recording... Time: " << std::fixed << std::setprecision(2) 
-                << time_ << "s" << std::endl;
+                << time_ << "s | Records: " << log_counter_ << " | Press Ctrl+C to stop" << std::endl;
     }
     
     log_counter_++;
@@ -374,7 +384,7 @@ public:
     const std::shared_ptr<const MotorCommand> mc =
         motor_command_buffer_.GetData();
     if (mc) {
-
+      dds_low_command.motor_cmd().at(29).q(1.0);  // Enable arm SDK control
       for (size_t i = 0; i < G1_NUM_MOTOR; i++) {  //loop through the motors
         dds_low_command.motor_cmd().at(i).mode() = 1;  // 1:Enable, 0:Disable
         dds_low_command.motor_cmd().at(i).tau() = mc->tau_ff.at(i);  //set the tau_ff field of the dds_low_command to the value of the tau_ff field of the mc variable
@@ -450,19 +460,6 @@ public:
     if (!ms || !first_state_received_ || !ms_left || !ms_right) return;
 
     time_ += control_dt_;
-    
-    // Check if recording should auto-stop after 20 seconds
-    if (recording_active_) {
-      auto current_time = std::chrono::steady_clock::now();
-      auto elapsed_seconds = std::chrono::duration<double>(current_time - recording_start_time_).count();
-      
-      if (elapsed_seconds >= recording_duration_seconds_) {
-        std::cout << "\n*** RECORDING AUTOMATICALLY STOPPED AFTER " << recording_duration_seconds_ << " SECONDS ***" << std::endl;
-        std::cout << "Total records saved: " << log_counter_ << std::endl;
-        recording_active_ = false;
-        g_running = false;  // Signal main loop to exit
-      }
-    }
     
     MotorCommand motor_command_tmp;
     

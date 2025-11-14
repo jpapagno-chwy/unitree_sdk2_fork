@@ -120,11 +120,11 @@ int main(int argc, char const *argv[]) {
   // modify the initial position to avoid collision
   std::array<float, 15> init_pos{0.f, 0.3,  0.f, 0, 0, 0, 0,
                                      0.f, -0.3, 0.f, 0, 0, 0, 0,
-                                     0.f};
+                                     1.0f};
 
   std::array<float, 15> target_pos = {0.f, kPi_2,  0.f, kPi_2, 0, 0, 0,
                                      0.f, -kPi_2, 0.f, kPi_2, 0, 0, 0,
-                                     0.f};
+                                     1.0f};
 
   // wait for init
   std::cout << "Press ENTER to init arms ...";
@@ -139,6 +139,10 @@ int main(int argc, char const *argv[]) {
 	std::cout << current_jpos.at(i) << " ";
   }
   std::cout << std::endl;
+  
+  // Debug waist joint specifically
+  std::cout << "Waist joint (index 12) current position: " << state_msg.motor_state().at(12).q() << " radians" << std::endl;
+  std::cout << "Waist target will be: 1.0 radians (~57 degrees)" << std::endl;
 
   // set init pos
   std::cout << "Initailizing arms ...";
@@ -181,7 +185,7 @@ int main(int argc, char const *argv[]) {
 
   std::array<float, 15> current_jpos_des{0.f, 0.3,  0.f, 0, 0, 0, 0,
                                         0.f, -0.3, 0.f, 0, 0, 0, 0,
-                                        0.f};
+                                        1.0f};
 
   // lift arms up
   for (int i = 0; i < num_time_steps; ++i) {

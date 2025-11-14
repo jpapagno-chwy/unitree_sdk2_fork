@@ -18,7 +18,7 @@ std::vector<float> stringToFloatVector(const std::string &str) {
 }
 
 int main(int argc, char const *argv[]) {
-  std::map<std::string, std::string> args = {{"network_interface", "lo"}};
+  std::map<std::string, std::string> args = {{"network_interface", "enx6c1ff75becc8"}};
 
   std::map<std::string, std::string> values;
   for (int i = 1; i < argc; ++i) {
@@ -45,12 +45,19 @@ int main(int argc, char const *argv[]) {
     }
   }
 
-  unitree::robot::ChannelFactory::Instance()->Init(0, args["network_interface"]);
+  std::cout << "Initializing ChannelFactory..." << std::endl;
+  unitree::robot::ChannelFactory::Instance()->Init(0, "enx6c1ff75becc8");
+  std::cout << "ChannelFactory initialized successfully." << std::endl;
 
+  std::cout << "Creating LocoClient..." << std::endl;
   unitree::robot::h1::LocoClient client;
 
+  std::cout << "Initializing LocoClient..." << std::endl;
   client.Init();
+  std::cout << "LocoClient initialized successfully." << std::endl;
+  
   client.SetTimeout(10.f);
+  std::cout << "Timeout set to 10s." << std::endl;
 
   for (const auto &arg_pair : args) {
     std::cout << "Processing command: [" << arg_pair.first << "] with param: [" << arg_pair.second << "] ..."
@@ -61,8 +68,14 @@ int main(int argc, char const *argv[]) {
 
     if (arg_pair.first == "get_fsm_id") {
       int fsm_id;
-      client.GetFsmId(fsm_id);
-      std::cout << "current fsm_id: " << fsm_id << std::endl;
+      std::cout << "Calling GetFsmId..." << std::endl;
+      try {
+        client.GetFsmId(fsm_id);
+        std::cout << "current fsm_id: " << fsm_id << std::endl;
+      } catch (const std::exception& e) {
+        std::cerr << "Error in GetFsmId: " << e.what() << std::endl;
+        return 1;
+      }
     }
 
     if (arg_pair.first == "get_fsm_mode") {

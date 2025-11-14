@@ -141,7 +141,7 @@ inline uint32_t Crc32Core(uint32_t *ptr, uint32_t len) {
 float GetMotorKp(MotorType type) {
   switch (type) {
     case GearboxS:
-      return 30;   // Moderate stiffness
+      return 100;   // Moderate stiffness
     case GearboxM:
       return 30;
     case GearboxL:
